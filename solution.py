@@ -72,7 +72,6 @@ class SharedBuffer(shared_memory.SharedMemory):
 
         if cache_size <= 0:
             raise ValueError("cache_size must be positive")
-            raise NotImplementedError("TODO: implement SharedBuffer.__init__")
         #metadata
         dtype = np.dtype([
             ("write_pos",     np.uint64),
@@ -195,8 +194,8 @@ class SharedBuffer(shared_memory.SharedMemory):
 
         Readers can use this to resynchronize or compute how much data is available.
         """
-        raise NotImplementedError("TODO: implement SharedBuffer.get_write_pos")
-
+        return int(self._meta["write_pos"][0])
+        
     def compute_max_amount_writable(self, force_rescan: bool = False) -> int:
         """
         Return how many bytes the writer can safely expose right now.
