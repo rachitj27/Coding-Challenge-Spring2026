@@ -110,6 +110,9 @@ class SharedBuffer(shared_memory.SharedMemory):
         Reader instances are expected to mark themselves active while inside the
         context. Writer-only instances can simply return `self`.
         """
+        if self._reader != self._NO_READER:
+            self.set_reader_active(True)
+    
         return self
 
     def __exit__(self, *_):
@@ -119,6 +122,9 @@ class SharedBuffer(shared_memory.SharedMemory):
         Reader instances are expected to mark themselves inactive on exit, then
         close local resources.
         """
+        if self._reader != self._NO_READER:
+            self.set_reader_active(False)
+    
         self.close()
 
     def calculate_pressure(self) -> int:
@@ -145,7 +151,9 @@ class SharedBuffer(shared_memory.SharedMemory):
 
         This must fail clearly when called on a writer-only instance.
         """
-        raise NotImplementedError("TODO: implement SharedBuffer.update_reader_pos")
+        if self._reader == self._NO_READER:
+            raise ValueError("cannot update reader pos on a writer instance")
+        self._meta["reader_pos"][0][self._reader] = new_reader_pos
 
     def set_reader_active(self, active: bool) -> None:
         """
@@ -154,7 +162,9 @@ class SharedBuffer(shared_memory.SharedMemory):
         Active readers apply backpressure. Inactive readers should not reduce
         writer capacity.
         """
-        raise NotImplementedError("TODO: implement SharedBuffer.set_reader_active")
+        if self._reader == self._NO_READER:
+            raise ValueError("cannot set reader active on a writer instance")
+        self._meta["reader_active"][0][self._reader] = active
 
     def is_reader_active(self) -> bool:
         """
@@ -162,7 +172,9 @@ class SharedBuffer(shared_memory.SharedMemory):
 
         This must fail clearly when called on a writer-only instance.
         """
-        raise NotImplementedError("TODO: implement SharedBuffer.is_reader_active")
+        if self._reader == self._NO_READER:
+            raise ValueError("cannot check reader active on a writer instance")
+        return bool(self._meta["reader_active"][0][self._reader])
 
     def update_write_pos(self, new_writer_pos: int) -> None:
         """
@@ -170,7 +182,7 @@ class SharedBuffer(shared_memory.SharedMemory):
 
         The write position is what makes newly written bytes visible to readers.
         """
-        raise NotImplementedError("TODO: implement SharedBuffer.update_write_pos")
+        self._meta["write_pos"][0] = new_writer_pos
 
     def inc_writer_pos(self, inc_amount: int) -> None:
         """
@@ -178,7 +190,7 @@ class SharedBuffer(shared_memory.SharedMemory):
 
         This is how a writer publishes bytes after copying them into the buffer.
         """
-        raise NotImplementedError("TODO: implement SharedBuffer.inc_writer_pos")
+        self._meta["write_pos"][0] += inc_amount
 
     def inc_reader_pos(self, inc_amount: int) -> None:
         """
@@ -186,7 +198,9 @@ class SharedBuffer(shared_memory.SharedMemory):
 
         This is how a reader consumes bytes after reading them.
         """
-        raise NotImplementedError("TODO: implement SharedBuffer.inc_reader_pos")
+        if self._reader == self._NO_READER:
+            raise ValueError("cannot increment reader pos on a writer instance")
+        self._meta["reader_pos"][0][self._reader] += inc_amount
 
     def get_write_pos(self) -> int:
         """
