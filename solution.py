@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from csv import reader
 from multiprocessing import shared_memory
+from os import name
 from typing import TypeAlias
 
 import numpy as np
@@ -55,7 +57,41 @@ class SharedBuffer(shared_memory.SharedMemory):
         - `cache_align` / `cache_size`: optional metadata-layout knobs; you may ignore
           them internally as long as validation and behavior remain correct
         """
-        raise NotImplementedError("TODO: implement SharedBuffer.__init__")
+        #validation
+        if not isinstance(name, str) or len(name) == 0:
+            raise ValueError("name must be a non-empty string")
+
+        if size <= 0:
+            raise ValueError("size must be positive")
+
+        if num_readers <= 0:
+            raise ValueError("num_readers must be positive")
+
+        if reader < -1 or reader >= num_readers:
+            raise ValueError("reader must be -1 or a valid reader index")
+
+        if cache_size <= 0:
+            raise ValueError("cache_size must be positive")
+            raise NotImplementedError("TODO: implement SharedBuffer.__init__")
+        #metadata
+        dtype = np.dtype([
+            ("write_pos",     np.uint64),
+            ("reader_pos",    np.uint64, num_readers),
+            ("reader_active", np.uint8,  num_readers),
+])
+        super().__init__(name=name, create=create, size=dtype.itemsize + size)
+        self._meta = np.ndarray(1, dtype=dtype, buffer=self.buf)
+        self._buf = self.buf[dtype.itemsize:]
+
+        if create:
+            self._meta["write_pos"][0] = 0
+            self._meta["reader_pos"][0][:] = 0
+            self._meta["reader_active"][0][:] = 0
+
+       
+        self._size = size
+        self._num_readers = num_readers
+        self._reader = reader
 
     def close(self) -> None:
         """
