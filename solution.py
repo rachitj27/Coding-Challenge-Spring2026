@@ -134,7 +134,9 @@ class SharedBuffer(shared_memory.SharedMemory):
         Pressure is based on how much of the bounded storage is currently in use
         relative to the slowest active reader.
         """
-        raise NotImplementedError("TODO: implement SharedBuffer.calculate_pressure")
+        min_reader_pos = int(self._meta["reader_pos"][0].min())
+        write_pos = self.get_write_pos()
+        return int((write_pos - min_reader_pos) / self._size * 100)
 
     def int_to_pos(self, value: int) -> int:
         """
@@ -217,7 +219,23 @@ class SharedBuffer(shared_memory.SharedMemory):
         This should take active readers into account. `force_rescan=True` is used
         by the tests to ensure externally updated reader positions are observed.
         """
-        raise NotImplementedError("TODO: implement SharedBuffer.compute_max_amount_writable")
+        write_pos = self.get_write_pos()
+    
+       
+        active = self._meta["reader_active"][0]
+        reader_positions = self._meta["reader_pos"][0]
+        
+        
+        active_positions = reader_positions[active.astype(bool)]
+        
+       
+        if len(active_positions) == 0:
+            return self._size
+        
+        
+        min_pos = int(active_positions.min())
+        
+        return max(0, self._size - (write_pos - min_pos))
 
     def jump_to_writer(self) -> None:
         """
@@ -226,7 +244,7 @@ class SharedBuffer(shared_memory.SharedMemory):
         Use this when a reader has fallen too far behind and old unread data is
         no longer retained.
         """
-        raise NotImplementedError("TODO: implement SharedBuffer.jump_to_writer")
+        self.update_reader_pos(self.get_write_pos())
 
     def expose_writer_mem_view(self, size: int) -> RingView:
         """
