@@ -6,6 +6,7 @@ from os import name
 from typing import TypeAlias
 
 import numpy as np
+from scipy.fftpack import dst
 
 
 __all__ = ["SharedBuffer"]
@@ -72,6 +73,8 @@ class SharedBuffer(shared_memory.SharedMemory):
 
         if cache_size <= 0:
             raise ValueError("cache_size must be positive")
+        if cache_align and (cache_size & (cache_size - 1)) != 0:
+            raise ValueError("cache_size must be a power of two when cache_align is True")
         #metadata
         dtype = np.dtype([
             ("write_pos",     np.uint64),
@@ -91,6 +94,12 @@ class SharedBuffer(shared_memory.SharedMemory):
         self._size = size
         self._num_readers = num_readers
         self._reader = reader
+    @property
+    def buffer_size(self) -> int:
+        return self._size
+    @property
+    def num_readers(self) -> int:
+        return self._num_readers
 
     def close(self) -> None:
         """
@@ -134,9 +143,14 @@ class SharedBuffer(shared_memory.SharedMemory):
         Pressure is based on how much of the bounded storage is currently in use
         relative to the slowest active reader.
         """
-        min_reader_pos = int(self._meta["reader_pos"][0].min())
         write_pos = self.get_write_pos()
-        return int((write_pos - min_reader_pos) / self._size * 100)
+        active = self._meta["reader_active"][0]
+        reader_positions = self._meta["reader_pos"][0]
+        active_positions = reader_positions[active.astype(bool)]
+        if len(active_positions) == 0:
+            return 0
+        min_pos = int(active_positions.min())
+        return int((write_pos - min_pos) / self._size * 100)
 
     def int_to_pos(self, value: int) -> int:
         """
@@ -145,7 +159,7 @@ class SharedBuffer(shared_memory.SharedMemory):
         If your design does not use modulo arithmetic internally, you may still
         keep this helper as the mapping from logical positions to buffer offsets.
         """
-        raise NotImplementedError("TODO: implement SharedBuffer.int_to_pos")
+        return value % self._size
 
     def update_reader_pos(self, new_reader_pos: int) -> None:
         """
@@ -154,7 +168,7 @@ class SharedBuffer(shared_memory.SharedMemory):
         This must fail clearly when called on a writer-only instance.
         """
         if self._reader == self._NO_READER:
-            raise ValueError("cannot update reader pos on a writer instance")
+            raise RuntimeError("cannot update reader pos on a writer instance")
         self._meta["reader_pos"][0][self._reader] = new_reader_pos
 
     def set_reader_active(self, active: bool) -> None:
@@ -165,7 +179,7 @@ class SharedBuffer(shared_memory.SharedMemory):
         writer capacity.
         """
         if self._reader == self._NO_READER:
-            raise ValueError("cannot set reader active on a writer instance")
+            raise RuntimeError("cannot set reader active on a writer instance")
         self._meta["reader_active"][0][self._reader] = active
 
     def is_reader_active(self) -> bool:
@@ -175,7 +189,7 @@ class SharedBuffer(shared_memory.SharedMemory):
         This must fail clearly when called on a writer-only instance.
         """
         if self._reader == self._NO_READER:
-            raise ValueError("cannot check reader active on a writer instance")
+            raise RuntimeError("cannot check reader active on a writer instance")
         return bool(self._meta["reader_active"][0][self._reader])
 
     def update_write_pos(self, new_writer_pos: int) -> None:
@@ -201,7 +215,7 @@ class SharedBuffer(shared_memory.SharedMemory):
         This is how a reader consumes bytes after reading them.
         """
         if self._reader == self._NO_READER:
-            raise ValueError("cannot increment reader pos on a writer instance")
+            raise RuntimeError("cannot increment reader pos on a writer instance")
         self._meta["reader_pos"][0][self._reader] += inc_amount
 
     def get_write_pos(self) -> int:
@@ -259,7 +273,17 @@ class SharedBuffer(shared_memory.SharedMemory):
         If less than `size` bytes are currently writable, clamp to the amount
         available rather than raising.
         """
-        raise NotImplementedError("TODO: implement SharedBuffer.expose_writer_mem_view")
+       
+       
+        actual_size = min(size, self.compute_max_amount_writable())
+        start = self.int_to_pos(self.get_write_pos())
+        if start + actual_size <= self._size:
+            return self._buf[start:start + actual_size], None, actual_size, False
+        else:
+            first_chunk = self._size - start
+            mv1 = self._buf[start:]
+            mv2 = self._buf[:actual_size - first_chunk]
+            return mv1, mv2, actual_size, True
 
     def expose_reader_mem_view(self, size: int) -> RingView:
         """
@@ -268,7 +292,28 @@ class SharedBuffer(shared_memory.SharedMemory):
         The shape matches `expose_writer_mem_view()`. If less than `size` bytes
         are currently readable, clamp to the amount available rather than raising.
         """
-        raise NotImplementedError("TODO: implement SharedBuffer.expose_reader_mem_view")
+        
+        if self._reader == self._NO_READER:
+            raise RuntimeError("cannot call this on a writer instance")
+        write_pos = self.get_write_pos()
+        reader_pos = int(self._meta["reader_pos"][0][self._reader])
+        
+        # add this check
+        if write_pos - reader_pos > self._size:
+            self.jump_to_writer()
+            return memoryview(self._buf)[0:0], None, 0, False
+        
+        available = write_pos - reader_pos
+        actual_size = min(size, available)
+        start = self.int_to_pos(reader_pos)
+        if start + actual_size <= self._size:
+            return memoryview(self._buf)[start:start + actual_size], None, actual_size, False
+        else:
+            first_chunk = self._size - start
+            mv1 = memoryview(self._buf)[start:]
+            mv2 = memoryview(self._buf)[:actual_size - first_chunk]
+            return mv1, mv2, actual_size, True
+
 
     def simple_write(self, writer_mem_view: RingView, src: object) -> None:
         """
@@ -278,7 +323,15 @@ class SharedBuffer(shared_memory.SharedMemory):
         This helper should not publish data by itself; publishing happens when the
         writer position is advanced.
         """
-        raise NotImplementedError("TODO: implement SharedBuffer.simple_write")
+        mv1, mv2, actual_size, split = writer_mem_view
+        src_bytes = bytes(memoryview(src).cast('B'))
+        if not split:
+            mv1[:actual_size] = src_bytes[:actual_size]
+        else:
+            first_chunk = len(mv1)
+            mv1[:] = src_bytes[:first_chunk]
+            mv2[:] = src_bytes[first_chunk:actual_size]
+ 
 
     def simple_read(self, reader_mem_view: RingView, dst: object) -> None:
         """
@@ -288,7 +341,17 @@ class SharedBuffer(shared_memory.SharedMemory):
         This helper should not consume data by itself; consumption happens when the
         reader position is advanced.
         """
-        raise NotImplementedError("TODO: implement SharedBuffer.simple_read")
+        mv1, mv2, actual_size, split = reader_mem_view
+        dst_bytes = memoryview(dst).cast('B')
+        copy_size = min(actual_size, len(dst_bytes))
+        if not split:
+            dst_bytes[:copy_size] = bytes(mv1[:copy_size])
+        else:
+            first_chunk = min(len(mv1), copy_size)
+            dst_bytes[:first_chunk] = bytes(mv1[:first_chunk])
+            remaining = copy_size - first_chunk
+            if remaining > 0:
+                dst_bytes[first_chunk:copy_size] = bytes(mv2[:remaining])
 
     def write_array(self, arr: np.ndarray) -> int:
         """
@@ -297,7 +360,19 @@ class SharedBuffer(shared_memory.SharedMemory):
         Return the number of bytes written. If the full array does not fit, the
         contract used by the tests expects this method to return `0`.
         """
-        raise NotImplementedError("TODO: implement SharedBuffer.write_array")
+        nbytes = arr.nbytes
+        
+        
+        if nbytes > self.compute_max_amount_writable():
+            return 0
+        
+        
+        view = self.expose_writer_mem_view(nbytes)
+        self.simple_write(view, arr)
+        
+        
+        self.inc_writer_pos(nbytes)
+        return nbytes
 
     def read_array(self, nbytes: int, dtype: np.dtype) -> np.ndarray:
         """
@@ -307,4 +382,14 @@ class SharedBuffer(shared_memory.SharedMemory):
         available. If there are not enough readable bytes, return an empty array
         with the requested dtype.
         """
-        raise NotImplementedError("TODO: implement SharedBuffer.read_array")
+        write_pos = self.get_write_pos()
+        reader_pos = int(self._meta["reader_pos"][0][self._reader])
+        available = write_pos - reader_pos
+        if available < nbytes:
+            return np.array([], dtype=dtype)
+        view = self.expose_reader_mem_view(nbytes)
+        _, _, actual_size, _ = view
+        buf = bytearray(actual_size)
+        self.simple_read(view, buf)
+        self.inc_reader_pos(actual_size)
+        return np.frombuffer(buf, dtype=dtype)
