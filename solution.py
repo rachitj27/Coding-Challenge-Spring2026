@@ -281,7 +281,7 @@ class SharedBuffer(shared_memory.SharedMemory):
             return self._buf[start:start + actual_size], None, actual_size, False
         else:
             first_chunk = self._size - start
-            mv1 = self._buf[start:]
+            mv1 = self._buf[start:start + first_chunk]
             mv2 = self._buf[:actual_size - first_chunk]
             return mv1, mv2, actual_size, True
 
@@ -310,7 +310,7 @@ class SharedBuffer(shared_memory.SharedMemory):
             return memoryview(self._buf)[start:start + actual_size], None, actual_size, False
         else:
             first_chunk = self._size - start
-            mv1 = memoryview(self._buf)[start:]
+            mv1 = memoryview(self._buf)[start:start + first_chunk]
             mv2 = memoryview(self._buf)[:actual_size - first_chunk]
             return mv1, mv2, actual_size, True
 
